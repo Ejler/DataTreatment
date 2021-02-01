@@ -72,6 +72,9 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
         string = parameter_string.strip(';').split(';')
         self.debugging = False
         self.model, self.target, self.time = None, None, list()
+        self.aperture_uncertainty = None
+        self.np_uncertainty = None
+        self.number_uncertainty = None
         for item in string:
             param, value = item.split('=')
             if param == 'SENSITIVITY_FILTER':
@@ -84,8 +87,10 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
                 radius_particle = float(value)/2.*1e-9
                 self.area_particle = np.pi * ((radius_particle)**2)
             elif param == 'APERTURE_DIAMETER':
-                radius_aperture = float(value)/2.*1e-3
-                self.area_aperture = np.pi * ((radius_aperture)**2)
+                self.radius_aperture = float(value)/2.*1e-3
+                self.area_aperture = np.pi * ((self.radius_aperture)**2)
+            elif param == 'AP_UNCERTAINTY':
+                self.aperture_uncertainty = float(value)
             elif param == 'DEBUG':
                 self.debugging = parse_bool_string(value)
             elif param == 'MODEL':
@@ -105,6 +110,10 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
                     self.time = [float(val) for val in value.split(',')]
             else:
                 print('par/val pair ({0}/{1}) not recognized'.format(param, value))
+
+        if not self.aperture_uncertainty is None:
+            self.aperture_uncertainty = np.pi/2 * self.radius_aperture*2 * self.aperture_uncertainty*1e-3
+
         if self.debugging:
             plot = True
         if plot:
@@ -114,6 +123,8 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
             self.ax1 = fig.add_subplot(211)
             self.ax2 = fig.add_subplot(212)
             self.plot = plot
+        else:
+            self.plot = False
         if self.debugging:
             fig = plt.figure(2)
             self.dbg0 = fig.add_subplot(311)
@@ -129,6 +140,7 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
         self.data = data
         self.dep_rate = None
         self.present_coverage = None
+        self.total_dep_time = 0
 
     def convert_coverage_to_number(self, coverage):
         """Convert target coverage from percent to number of particles."""
@@ -154,6 +166,25 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
             coverage = number*100/(self.area_aperture*self.sa_density)
         elif self.model == 'NP':
             coverage = number*100/self.area_aperture*self.area_particle
+            # Estimate uncertainty
+            print('Unc -----')
+            print(number)
+            print(self.area_particle)
+            print(self.area_aperture)
+            if self.number_uncertainty is None:
+                self.number_uncertainty = 0
+            if self.np_uncertainty is None:
+                self.np_uncertainty = 0
+            if self.aperture_uncertainty is None:
+                self.aperture_uncertainty = 0
+            print(f'Uncertainty on number of particles: {self.number_uncertainty}')
+            print(f'Uncertainty on area of a particle: {self.np_uncertainty}')
+            print(f'Uncertainty on area of effective aperture: {self.aperture_uncertainty}')
+            #self.aperture_uncertainty = 0
+            var = (self.area_particle/self.area_aperture*self.number_uncertainty)**2 + (number/self.area_aperture*self.np_uncertainty)**2 + (number*self.area_particle/(self.area_aperture**2)*self.aperture_uncertainty)**2
+            self.coverage_uncertainty = 2*np.sqrt(var)*100
+            print(f'Coverage ± {self.coverage_uncertainty} %')
+            print('    -----')
         return coverage
 
     def integrate(self):
@@ -178,6 +209,7 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
             self.ax2.plot(self.data[:, 0], net_current/e, 'bo-', markersize=1)
 
         # Estimate time to next coverage step
+        self.number_uncertainty = self.total_dep_time*self.std2/e
         present_coverage = self.convert_number_to_coverage(integral)
         for coverage in self.target:
             if coverage >= present_coverage:
@@ -186,8 +218,17 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
             else:
                 target_coverage = self.target[-1]
         target_number = self.convert_coverage_to_number(target_coverage)
+        self.coverage = present_coverage
+        self.pmol_clusters = to_pmol(integral)
 
         # If specific target chosen or over 300 %, else...
+        #a = self.std2
+        #print(a)
+        #print(self.total_dep_time, a, e)
+        #self.uncertainty_pmol = to_pmol(self.total_dep_time*a/e)
+        #print('± ', self.uncertainty_pmol, ' pmol')
+        #self.uncertainty_coverage = self.total_dep_time*a/e
+        #print('±', self.uncertainty_coverage, ' %')
         if target_number < integral:
             msg = 'Target coverage ({0} %) already exceeded: {1} %.'
             print(msg.format(target_coverage, present_coverage))
@@ -195,6 +236,7 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
         else:
             msg = 'Total charge deposited: {} pmol.\n'.format(to_pmol(integral))
             msg += 'Present coverage: {} %\n'.format(present_coverage)
+            msg += 'Time estimate based on the last 100 points of deposition current\n'
             msg += 'Time until {} % coverage: {} hr {} min {} sec'
             remaining = target_number - integral
             time_left = remaining/dep_rate
@@ -204,7 +246,10 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
             print(msg.format(target_coverage, time_hr, time_min, time_sec))
 
         # Return data as particles per second
-        return net_current/e
+        if self.plot:
+            return net_current/e, self.ax1
+        else:
+            return net_current/e
 
     def separate_data(self):
         """Separate data into regions of background and deposition current."""
@@ -217,15 +262,17 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
         try:
             while True:
                 index = offset + counter
-                if self.polarity*(self.data[index+1, 1] - self.data[index, 1]) < -limit:
+                distance = self.data[index+1, 1] - self.data[index, 1]
+                if self.polarity*distance < -limit:
                     first_region = 'deposition'
                     break
-                elif self.polarity*(self.data[index+1, 1] - self.data[index, 1]) > limit:
+                elif self.polarity*distance > limit:
                     first_region = 'background'
                     break
                 counter += 1
             msg = 'First region detected: "{0}" at filtered index {1} = {2} seconds'
             print(msg.format(first_region, index, round(self.data[index, 0], 2)))
+            #limit = distance*self.sensitivity_limit
         except IndexError:
             print(' *** Index exceeded when searching for first region. ***')
         if self.debugging:
@@ -233,7 +280,6 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
             self.dbg1.plot([0, t0], [self.first_limit*1e12]*2, color='r', linestyle='solid')
             self.dbg1.plot([0, t0], [self.first_limit*1e12*self.sensitivity_limit]*2, color='r', linestyle='dotted')
             self.dbg1.plot(self.data[1:, 0], abs(np.diff(self.data[:, 1])*1e12), 'bo:')
-            
 
         # Find remaining regions
         deposition, leak = dict(), dict()
@@ -249,6 +295,7 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
                 previous = i
                 counter_leak += 1
                 depo = True
+                limit = self.renew_limit(i)
             elif -limit > self.polarity*gradient and depo:
                 deposition[counter_current] = np.arange(previous+1, i+1)
                 previous = i
@@ -268,8 +315,11 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
         # Extrapolate between regions
         counter_current = len(deposition)
         extrapolated_leak = dict()
+        print(self.std)
+        print(np.diff(smooth(self.data[:, 1])).std())
         if first_region == 'deposition':
             for i in np.arange(counter_current):
+                self.total_dep_time += np.sum(np.diff(self.data[deposition[i], 0]))
                 if i == 0:
                     slope, intercept = 0, self.data[leak[i], 1].mean()
                 elif (i == counter_current - 1) and (last_region == 'deposition'):
@@ -281,6 +331,7 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
                 extrapolated_leak[i] = slope*self.data[deposition[i], 0] + intercept
         else:
             for i in np.arange(counter_current):
+                self.total_dep_time += np.sum(np.diff(self.data[deposition[i], 0]))
                 if (i == counter_current - 1) and (last_region == 'deposition'):
                     slope, intercept = 0, self.data[leak[i], 1].mean()
                 else:
@@ -333,10 +384,11 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
         # Get fluctuation information
         averaged_gradient = get_averaged_gradient(self.data[:, 1], width=2)
         std = self.get_std(averaged_gradient)
+        self.std = std
         if self.debugging:
-            self.dbg2.plot(self.data[:, 0], abs(averaged_gradient), 'bo', markersize=2)
-            self.dbg2.axhline(y=std, color='r', linewidth=2)
-            self.dbg2.axhline(y=std, color='k', linewidth=2, linestyle='dashed')
+            self.dbg2.plot(self.data[:, 0], abs(averaged_gradient)/std, 'bo', markersize=2)
+            self.dbg2.axhline(y=std/std, color='r', linewidth=2)
+            self.dbg2.axhline(y=std/std*self.sensitivity_filter, color='k', linewidth=2, linestyle='dashed')
 
         # Apply noise filter
         self.data = self.data[np.where(abs(averaged_gradient) < std*self.sensitivity_filter)]
@@ -356,6 +408,8 @@ class IntegrateCurrent(object): # pylint: disable=useless-object-inheritance
                 if self.debugging:
                     self.dbg2.axvline(x=self.data[offset+counter, 0], color='r')
                 break
+        self.std2 = self.data[1:offset+counter, 1].std()
+        print('STDs: ', std_gradient, self.std2)
         return std_gradient
 
 ################################################################
@@ -371,13 +425,14 @@ if __name__ == '__main__':
     ID = 18982 # GG 29
     #ID = 17601 # SA1
     #ID = 17585 # SA2
+    ID = 14273 # 70% 6nm Pt
     STRING = '\
 TARGET=5.0;\
 MODEL=NP;\
 SA_DENSITY=1.58426e19;\
-PARTICLE_DIAMETER=5.0;\
-APERTURE_DIAMETER=4.5;\
-FIRST_LIMIT=10;\
+PARTICLE_DIAMETER=6.0;\
+APERTURE_DIAMETER=12.41;\
+FIRST_LIMIT=20;\
 SENSITIVITY_LIMIT=.7;SENSITIVITY_FILTER=1.;\
 TIME=[];\
 DEBUG=False'
