@@ -30,6 +30,9 @@ def copy_range(x, lim1, lim2):
 
 def smooth(data, width=1):
     """Average `data` with `width` neighbors"""
+    if len(data) == 0:
+        print('Empty data! ', len(data))
+        return data
     smoothed_data = np.zeros(len(data))
     smoothed_data[width:-width] = data[2*width:]
     for i in range(2*width):
@@ -39,3 +42,16 @@ def smooth(data, width=1):
             smoothed_data[-1-i] = sum(data[-1-i-width:])/len(data[-1-i-width:])
     smoothed_data[width:-width] = smoothed_data[width:-width]/(2*width+1)
     return smoothed_data
+
+def weighted_smooth(data, repeat=1):
+    """I[n] = 1/4(I[n-1] + 2I[n] + I[n+1]"""
+    for iteration in range(repeat):
+        copy = np.zeros(data.shape)
+        copy += data*2
+        copy[1:] += data[:-1]
+        copy[:-1] += data[1:]
+        copy[1:-1] /= 4
+        copy[0] /= 3
+        copy[-1] /= 3
+        data = copy.copy()
+    return data

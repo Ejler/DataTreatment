@@ -283,6 +283,8 @@ and (lines[i+1].lower().rstrip() == 'kinetic energy')]
                     print('Dataset appeared to be empty from the saved timestamps, but is not empty.')
             if normalize:
                 self.cps[0] /= self.dwell[0]
+        else:
+            raise IOError('File: "{}" not found or fileending not accepted.'.format(self.filename))
 
         # Print loaded settings
         print('Successfully loaded file: {}'.format(filename))
@@ -388,13 +390,14 @@ np.sqrt(mass**2 - self.settings['mass']**2*np.sin(angle)**2))/(mass + self.setti
                     self.cps[__counter] = self.cps[__counter]/value
 
 
-    def AddMassLines(self, masses, offset=0, color='k', labels=True):
+    def AddMassLines(self, masses, ax=None, offset=0, color='k', labels=True, linestyle='dotted', **kwargs):
         """Add vertical lines for mass references."""
         energies = self.ConvertEnergy(np.array(masses))
-        ax = plt.gca()
+        if ax is None:
+            ax = plt.gca()
         [x1, x2, y1, y2] = ax.axis()
         for energy, mass in zip(energies, masses):
-            ax.axvline(x=energy-offset, ymin=0, ymax=1, linestyle='dotted', color=color)
+            ax.axvline(x=energy-offset, ymin=0, ymax=1, linestyle=linestyle, color=color, **kwargs)
             if labels:
                 ax.text(float(energy)/x2, 0.95, 'm-{}'.format(mass), transform=ax.transAxes)
 
@@ -796,4 +799,12 @@ def interpret_fit(dictionary):
     return new_dict, results
     
 
-
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) == 2:
+        print(sys.argv[1])
+        experiment = Experiment(sys.argv[1])
+        experiment.PlotAllScans()
+        plt.show()
+    else:
+        print('Pass a single ISS file as extra argument to plot all the data scans')

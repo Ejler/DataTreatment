@@ -182,6 +182,7 @@ different practical functions for data treatment"""
             group_meta = db.get_metadata_group(timestamp)
 
             # Get a list of labels and group data
+            print(group_meta)
             self.name = group_meta[list(group_meta.keys())[0]]['Comment'].replace('/', '')
             self.labels = [group_meta[key]['mass_label'] for key in group_data.keys()]
             self.data = {group_meta[key]['mass_label']: group_data[key] for key in group_data.keys()}
@@ -270,8 +271,10 @@ different practical functions for data treatment"""
             time_ref = self.data[set_label][:,0][region]
             for label in self.labels:
                 # skip if empty
-                if self.data[label] == None:
-                    continue
+                #print(self.data[label], label)
+                #if self.data[label] == None:
+                #if len(self.data[label]) == 0:
+                #    continue
                 if len(self.data[label]) == 0:
                     continue
                 self.exps[i][label] = {}
@@ -282,8 +285,9 @@ different practical functions for data treatment"""
             # 3) Add temperature axis to each data set
             for label in self.labels:
                 # skip if empty
-                if self.data[label] == None:
-                    continue
+                #if self.data[label] == None:
+                #if len(self.data[label]) == 0:
+                #    continue
                 if len(self.data[label]) == 0:
                     continue
                 print(i, label)
@@ -323,16 +327,28 @@ different practical functions for data treatment"""
         index = ct.get_range(self.data[label][:, 0], limit[0], limit[1])
         return self.data[label][:, 0][index], self.data[label][:, 1][index]
 
-def get_total_signal(exp, ID):
+def get_total_signal(experiment, mass_label='M30'):
     """ Integrate time based QMS signal from 'isolate_experiments()' 
 Resembles a lot"""
 
+    # Check type of data input
+    if isinstance(experiment, Experiment):
+        # Redefine data
+        experiment = experiment.exps
+    elif isinstance(experiment, dict):
+        pass # Probably good
+    else:
+        raise TypeError('"data" should be a TPD.Experiment instance for default behaviour' \
+'or data set like TPD.Experiment.data["Prep Pressure"] for specific behaviour.')
+    if not mass_label in experiment[0]:
+        raise KeyError('mass_label {} not found in experiment dictionary {}'.format(mass_label, experiment.keys()))
+
     # For every experiment, add integrated signal as 'COVERAGE'
-    coverage = np.zeros(len(exp.keys()))
-    for i in exp.keys():
+    coverage = np.zeros(len(experiment.keys()))
+    for i in experiment.keys():
         ranges = []
-        x = exp[i][ID][0]
-        y = exp[i][ID][1]
+        x = experiment[i][mass_label][0]
+        y = experiment[i][mass_label][1]
         N = len(x)
         indice = np.arange(10)
         indice = np.append(indice, range(N-10, N))
@@ -341,10 +357,32 @@ Resembles a lot"""
         coverage[i] = simps(y - baseline, x=x) 
     return coverage
 
+def Langmuir(dose):
+    """Take a dose in mbar*s and return it in Langmuir"""
+    return dose*100/1.33e-4
 
+def get_doses(data, times, unit='Langmuir', subtract_background=False):
+    """Integrate doses.
+Data can be a TPD.Experiment object, in which case it defaults to self.data['Prep Pressure']
+Otherwise, data can be the numpy array you want to integrate. Pass it for instance:
+    self.data['M30'] to integrate the mass 30 signal.
+Times is a list of time sequences to integrate. Ex: times=[[12, 25], [1200, 1310]]
+Signal in data is integrated between these times with a linear background subtraction.
 
-def get_doseage(data, times):
-    """ Integrate doses """
+subtract_background (bool): if False (default), the raw signal is integrated with simps method,
+    else a linear background is fitted and subtracted from between the endpoints times[i]
+
+Returns: a list of doses with each index corresponding to the index in times."""
+
+    # Check type of data input
+    if isinstance(data, Experiment):
+        # Redefine data
+        data = data.data['Prep Pressure']
+    elif isinstance(data, np.ndarray):
+        pass # Good
+    else:
+        raise TypeError('"data" should be a TPD.Experiment instance for default behaviour' \
+'or data set like TPD.Experiment.data["Prep Pressure"] for specific behaviour.')
     
     # Initialize variables and ranges
     ranges = []
@@ -352,7 +390,38 @@ def get_doseage(data, times):
         ranges.append(get_range(data[:,0], deltat))
     doses = np.zeros(len(ranges))
     
-    # Loop to subtract background and integrate doseages
+    # Loop to subtract background and integrate doses
+    i = 0
+    for r in ranges:
+        x = data[:,0][r]
+        y = data[:,1][r]
+        if subtract_background:
+            N = len(x)
+            indice = np.arange(10)
+            indice = np.append(indice, range(N-10, N))
+            slope, intercept, rvalue, pvalue, std_err = linregress(x[indice], y[indice])
+            baseline = intercept + slope*x
+            doses[i] = simps(y - baseline, x=x)
+        else:
+            doses[i] = simps(y, x=x)
+        i += 1
+
+    # Convet to return unit
+    if unit.lower().startswith('l'): # Langmuir
+        doses = Langmuir(doses)
+    return doses
+
+
+def get_doseage(data, times):
+    """Changed to get_doses """
+    
+    # Initialize variables and ranges
+    ranges = []
+    for deltat in times:
+        ranges.append(get_range(data[:,0], deltat))
+    doses = np.zeros(len(ranges))
+    
+    # Loop to subtract background and integrate doses
     i = 0
     for r in ranges:
         x = data[:,0][r]
