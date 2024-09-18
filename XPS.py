@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import common_toolbox as ct
 
+ANODE_ENERGIES = {'Mg': 1253.6, 'Al': 1486.6}
+
 class Experiment():
     """Load an XPS experiment exported as text or VAMAS file.
 
@@ -27,14 +29,24 @@ Date: 2019 February 20
         self.first_comment = {}
 
         # Open filename with XPS data
-        f_handle = open(filename, 'r')
-        print('Input file: ' + filename)
-        lines = f_handle.readlines()
-        f_handle.close()
+        #f_handle = open(filename, 'r')
+        #print('Input file: ' + filename)
+        #lines = f_handle.readlines()
+        #f_handle.close()
 
         # Read data from textfile:
         if filename.endswith('.txt'):
             raise ImportError('Text file import has not been implemented yet!')
+        # Read data from Avantage
+        elif filename.lower().endswith('.vgd'):
+            from PyExpLabSys.file_parsers.avantage import VGDFile
+            content = VGDFile(filename)
+            self.KE[0, 0] = content.x
+            self.cps[0, 0] = content.data
+            #self.first_comment[0] = content.summary_properties[2].rstrip('\x00')
+            self.first_comment[0] = content.properties[16].rstrip('\x00')
+            print('ASSUMING ALUMINUM Kalpha ANODE!')
+            self.BE[0, 0] = ANODE_ENERGIES['Al'] - self.KE[0, 0]
         # Read data from VAMAS block file
         elif filename.endswith('.vms'):
             # Open filename with XPS data
@@ -277,3 +289,71 @@ class LoadSet():
 
         # Return data
         return self.data
+
+class ref(object):
+
+    def __init__(self, **kwargs):
+        import pandas as pd
+        filename = '/home/jejsor/DataTreatment/casaXPS_scofield.lib'
+        #with open(filename, 'r') as f:
+        #    lines = f.readlines()
+        self.header = ['element', 'region', 'peak', 'Auger', 'type',
+            'energy', '?1', '?2', 'RSF', 'ref']
+        #print(lines[1])
+        self.df = pd.read_csv(filename, sep='\t', header=None, names=self.header)
+        self.get(**kwargs)
+
+    def get(self, **kwargs):
+        print(len(kwargs))
+        print(kwargs)
+        #for key, value in kwargs.items():
+        elements = None
+        auger = True
+        anode = 'Mg'
+        for _ in range(len(kwargs)):
+            if 'Auger' in kwargs:
+                auger = kwargs.pop('Auger')
+            elif 'elements' in kwargs:
+                elements = kwargs.pop('elements')
+                if isinstance(elements, str):
+                    elements = [elements]
+            elif 'anode' in kwargs:
+                anode = kwargs.pop('anode')
+        if auger:
+            anode = [anode, 'Any']
+        df = self.df[self.df['ref'].isin(anode)]
+        if elements:
+            df = df[df['element'].isin(elements)]
+        else:
+            print('No elements detected!')
+        self.lines = df
+        
+    def plot(self, ax=plt.gca(), energy='BE'):
+        maximum = self.lines['RSF'].max()
+        for i, df in self.lines.T.items():
+            linestyle = 'dashed' if df['Auger'] else 'solid'
+            y = 0.8 * df['RSF'] / maximum if not df['Auger'] else 1
+            x = df['energy']
+            if df['type'] == energy:
+                pass
+            elif df['type'] == 'BE':
+                # ref is BE, but we want KE
+                x  = ANODE_ENERGIES[df['ref']] - x
+            label = df['peak']
+            ax.axvline(x, ymin=0, ymax=y, linestyle=linestyle)
+            ax.text(x, y, label, fontsize='small')#, transform=ax.transAxes)
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) == 2:
+        print(sys.argv[1])
+        experiment = Experiment(sys.argv[1])
+        x = experiment.KE[0]
+        y = experiment.cps[0]
+        plt.plot(experiment.anode_energies['Al'] - x, y, label=experiment.first_comment[0])
+        ct.flip_x(plt.gca())
+        #experiment.PlotAllScans()
+        plt.legend()
+        plt.show()
+    else:
+        print('Pass a single XPS file as extra argument to plot a data scan')
